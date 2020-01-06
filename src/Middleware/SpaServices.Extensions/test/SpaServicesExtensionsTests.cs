@@ -8,14 +8,13 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Castle.DynamicProxy.Generators.Emitters;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.SpaServices.AngularCli;
 using Microsoft.AspNetCore.SpaServices.ReactDevelopmentServer;
 using Microsoft.AspNetCore.SpaServices.StaticFiles;
-using Microsoft.AspNetCore.Testing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DiagnosticAdapter;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -26,7 +25,7 @@ namespace Microsoft.AspNetCore.SpaServices.Extensions.Tests
 {
     public class SpaServicesExtensionsTests
     {
-        [ConditionalFact]
+        [Fact]
         public void UseSpa_ThrowsInvalidOperationException_IfRootpathNotSet()
         {
             // Arrange
@@ -39,57 +38,85 @@ namespace Microsoft.AspNetCore.SpaServices.Extensions.Tests
             Assert.Equal("No RootPath was set on the SpaStaticFilesOptions.", exception.Message);
         }
 
-        [ConditionalFact]
+        [Fact]
         public async Task UseSpa_KillsRds_WhenAppIsStopped()
         {
             var serviceProvider = GetServiceProvider(s => s.RootPath = "/");
             var applicationbuilder = new ApplicationBuilder(serviceProvider);
             var applicationLifetime = serviceProvider.GetRequiredService<IHostApplicationLifetime>();
+            var diagnosticListener = serviceProvider.GetRequiredService<DiagnosticListener>();
+            var listener = new NpmStartedDiagnosticListener();
+            diagnosticListener.SubscribeWithAdapter(listener);
 
             applicationbuilder.UseSpa(b =>
             {
                 b.Options.SourcePath = Directory.GetCurrentDirectory();
-                b.UseReactDevelopmentServer(GetCommand());
+                b.UseReactDevelopmentServer(GetPlatformSpecificWaitCommand());
             });
 
-            // Give node a moment to start up
-            await Task.Delay(TimeSpan.FromSeconds(3));
-            var processCount = Process.GetProcesses().Length;
-
-            // Act
-            applicationLifetime.StopApplication();
-
-            // Assert
-            AssertNoErrors();
-            Assert.True(Process.GetProcesses().Length < processCount, $"Expected less than {processCount} processes");
+            await Assert_NpmKilled_WhenAppIsStopped(applicationLifetime, listener);
         }
 
-        [ConditionalFact]
+        [Fact]
         public async Task UseSpa_KillsAngularCli_WhenAppIsStopped()
         {
             var serviceProvider = GetServiceProvider(s => s.RootPath = "/");
             var applicationbuilder = new ApplicationBuilder(serviceProvider);
             var applicationLifetime = serviceProvider.GetRequiredService<IHostApplicationLifetime>();
+            var diagnosticListener = serviceProvider.GetRequiredService<DiagnosticListener>();
+            var listener = new NpmStartedDiagnosticListener();
+            diagnosticListener.SubscribeWithAdapter(listener);
 
             applicationbuilder.UseSpa(b =>
             {
                 b.Options.SourcePath = Directory.GetCurrentDirectory();
-                b.UseAngularCliServer(GetCommand());
+                b.UseAngularCliServer(GetPlatformSpecificWaitCommand());
             });
 
+            await Assert_NpmKilled_WhenAppIsStopped(applicationLifetime, listener);
+        }
+
+        private async Task Assert_NpmKilled_WhenAppIsStopped(IHostApplicationLifetime applicationLifetime, NpmStartedDiagnosticListener listener)
+        {
             // Give node a moment to start up
-            await Task.Delay(TimeSpan.FromSeconds(3));
-            var processCount = Process.GetProcesses().Length;
+            await Task.WhenAny(listener.NpmStarted, Task.Delay(TimeSpan.FromSeconds(30)));
+
+            Process npmProcess = null;
+            var npmExitEvent = new ManualResetEventSlim();
+            if (listener.NpmStarted.IsCompleted)
+            {
+                npmProcess = listener.NpmStarted.Result.Process;
+                Assert.False(npmProcess.HasExited);
+                npmProcess.Exited += (_, __) => npmExitEvent.Set();
+            }
 
             // Act
             applicationLifetime.StopApplication();
 
             // Assert
             AssertNoErrors();
-            Assert.True(Process.GetProcesses().Length < processCount, $"Expected less than {processCount} processes");
+            Assert.True(listener.NpmStarted.IsCompleted, "npm wasn't launched");
+
+            npmExitEvent.Wait(TimeSpan.FromSeconds(30));
+            Assert.True(npmProcess.HasExited, "npm wasn't killed");
         }
 
-        private string GetCommand()
+        private class NpmStartedDiagnosticListener
+        {
+            private readonly TaskCompletionSource<(ProcessStartInfo ProcessStartInfo, Process Process)> _npmStartedTaskCompletionSource
+                = new TaskCompletionSource<(ProcessStartInfo ProcessStartInfo, Process Process)>();
+
+            public Task<(ProcessStartInfo ProcessStartInfo, Process Process)> NpmStarted
+                => _npmStartedTaskCompletionSource.Task;
+
+            [DiagnosticName("Microsoft.AspNetCore.NodeServices.Npm.NpmStarted")]
+            public virtual void OnNpmStarted(ProcessStartInfo processStartInfo, Process process)
+            {
+                _npmStartedTaskCompletionSource.TrySetResult((processStartInfo, process));
+            }
+        }
+
+        private string GetPlatformSpecificWaitCommand()
             => RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "waitWindows" : "wait";
 
         private IApplicationBuilder GetApplicationBuilder(IServiceProvider serviceProvider = null)
@@ -115,6 +142,10 @@ namespace Microsoft.AspNetCore.SpaServices.Extensions.Tests
             services.AddSingleton<ILoggerFactory>(ListLoggerFactory);
             services.AddSingleton(typeof(IHostApplicationLifetime), new TestHostApplicationLifetime());
             services.AddSingleton(typeof(IWebHostEnvironment), new TestWebHostEnvironment());
+
+            var listener = new DiagnosticListener("Microsoft.AspNetCore");
+            services.AddSingleton(listener);
+            services.AddSingleton<DiagnosticSource>(listener);
 
             return services.BuildServiceProvider();
         }

@@ -1,14 +1,14 @@
 // Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
-using Microsoft.Extensions.Logging;
-using Microsoft.AspNetCore.NodeServices.Util;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
-using System.Collections.Generic;
 using System.Threading;
+using Microsoft.AspNetCore.NodeServices.Util;
+using Microsoft.Extensions.Logging;
 
 // This is under the NodeServices namespace because post 2.1 it will be moved to that package
 namespace Microsoft.AspNetCore.NodeServices.Npm
@@ -17,7 +17,7 @@ namespace Microsoft.AspNetCore.NodeServices.Npm
     /// Executes the <c>script</c> entries defined in a <c>package.json</c> file,
     /// capturing any output written to stdio.
     /// </summary>
-    internal class NodeScriptRunner
+    internal class NodeScriptRunner : IDisposable
     {
         private Process _npmProcess;
         public EventedStreamReader StdOut { get; }
@@ -25,7 +25,7 @@ namespace Microsoft.AspNetCore.NodeServices.Npm
 
         private static Regex AnsiColorRegex = new Regex("\x001b\\[[0-9;]*m", RegexOptions.None, TimeSpan.FromSeconds(1));
 
-        public NodeScriptRunner(string workingDirectory, string scriptName, string arguments, IDictionary<string, string> envVars, string pkgManagerCommand, CancellationToken applicationStoppingToken)
+        public NodeScriptRunner(string workingDirectory, string scriptName, string arguments, IDictionary<string, string> envVars, string pkgManagerCommand, DiagnosticSource diagnosticSource, CancellationToken applicationStoppingToken)
         {
             if (string.IsNullOrEmpty(workingDirectory))
             {
@@ -75,7 +75,18 @@ namespace Microsoft.AspNetCore.NodeServices.Npm
             StdOut = new EventedStreamReader(_npmProcess.StandardOutput);
             StdErr = new EventedStreamReader(_npmProcess.StandardError);
 
-            applicationStoppingToken.Register(EnsureNpmIsDead);
+            applicationStoppingToken.Register(((IDisposable)this).Dispose);
+            
+            if (diagnosticSource.IsEnabled("Microsoft.AspNetCore.NodeServices.Npm.NpmStarted"))
+            {
+                diagnosticSource.Write(
+                    "Microsoft.AspNetCore.NodeServices.Npm.NpmStarted",
+                    new
+                    {
+                        processStartInfo = processStartInfo,
+                        process = _npmProcess
+                    });
+            }
         }
 
         public void AttachToLogger(ILogger logger)
@@ -137,7 +148,7 @@ namespace Microsoft.AspNetCore.NodeServices.Npm
             }
         }
 
-        private void EnsureNpmIsDead()
+        void IDisposable.Dispose()
         {
             if (_npmProcess != null && !_npmProcess.HasExited)
             {
