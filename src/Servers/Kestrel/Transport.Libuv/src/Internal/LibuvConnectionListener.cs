@@ -147,6 +147,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
                 {
                     var listener = new Listener(TransportContext);
                     _listeners.Add(listener);
+                    listener.OnShutdown = OnListenerShutdown;
                     await listener.StartAsync(EndPoint, Threads[0]).ConfigureAwait(false);
                     EndPoint = listener.EndPoint;
                 }
@@ -157,6 +158,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
 
                     var listenerPrimary = new ListenerPrimary(TransportContext);
                     _listeners.Add(listenerPrimary);
+                    listenerPrimary.OnShutdown = OnListenerShutdown;
+
                     await listenerPrimary.StartAsync(pipeName, pipeMessage, EndPoint, Threads[0]).ConfigureAwait(false);
                     EndPoint = listenerPrimary.EndPoint;
 
@@ -164,6 +167,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
                     {
                         var listenerSecondary = new ListenerSecondary(TransportContext);
                         _listeners.Add(listenerSecondary);
+                        listenerSecondary.OnShutdown = OnListenerShutdown;
                         await listenerSecondary.StartAsync(pipeName, pipeMessage, EndPoint, thread).ConfigureAwait(false);
                     }
                 }
@@ -179,6 +183,12 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
                 await UnbindAsync().ConfigureAwait(false);
                 throw;
             }
+        }
+
+        private void OnListenerShutdown(ListenerContext listener)
+        {
+            Log.LogError(0, listener.ThreadFatalError, "Listener shut down with a fatal thread error.");
+            _listeners.Remove(listener);
         }
 
         private async IAsyncEnumerator<LibuvConnection> AcceptConnections()

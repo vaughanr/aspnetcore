@@ -33,6 +33,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
         {
             EndPoint = endPoint;
             Thread = thread;
+            Thread.ShutdownCallback = OnThreadShutdown;
 
             return Thread.PostAsync(listener =>
             {

@@ -38,6 +38,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
         public PipeOptions InputOptions { get; set; }
 
         public PipeOptions OutputOptions { get; set; }
+        public Exception ThreadFatalError { get; set; }
+        public Action<ListenerContext> OnShutdown { get; set; }
 
         public async ValueTask<LibuvConnection> AcceptAsync(CancellationToken cancellationToken = default)
         {
@@ -154,6 +156,13 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
             }
 
             return pipe;
+        }
+
+        protected void OnThreadShutdown(Exception ex)
+        {
+            ThreadFatalError = ex;
+            StopAcceptingConnections();
+            OnShutdown(this);
         }
 
         protected void StopAcceptingConnections()

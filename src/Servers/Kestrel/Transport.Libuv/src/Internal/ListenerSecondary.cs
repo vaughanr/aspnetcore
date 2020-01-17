@@ -44,6 +44,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Libuv.Internal
 
             EndPoint = endPoint;
             Thread = thread;
+            Thread.ShutdownCallback = OnThreadShutdown;
+
             DispatchPipe = new UvPipeHandle(Log);
 
             var tcs = new TaskCompletionSource<int>(this, TaskCreationOptions.RunContinuationsAsynchronously);
